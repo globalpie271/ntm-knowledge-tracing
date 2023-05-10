@@ -13,7 +13,8 @@ class Controller(nn.Module):
         if self._lstm_controller:
             self._controller = LSTMController(vector_length, hidden_size)
         else:
-            self._controller = FeedForwardController(vector_length, hidden_size)
+            # self._controller = FeedForwardController(vector_length, hidden_size)
+            self._controller = TransformerEncoderController(vector_length, hidden_size)
 
     def forward(self, x, state):
         return self._controller(x, state)
@@ -60,5 +61,24 @@ class FeedForwardController(nn.Module):
         output = F.relu(self.layer_2(x1))
         return output, state
 
-    def get_initial_state(self):
+    def get_initial_state(self, batch_size = None):
+        return 0, 0
+
+class TransformerEncoderController(nn.Module):
+    """
+    Transformer encoder controller
+    """
+    def __init__(self, vector_length, hidden_size, nhead = 1, num_layers = 1):
+        super(TransformerEncoderController, self).__init__()
+        self.encoder_layer = nn.TransformerEncoderLayer(d_model = vector_length, nhead = nhead)
+        self.linear = nn.Linear(vector_length, hidden_size)
+        # self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers = num_layers)
+
+    def forward(self, x, state):
+        x1 = self.encoder_layer(x)
+        x2 = self.linear(x1)
+        # output = F.softmax(x2)
+        output = torch.sigmoid(x2)
+        return output, state
+    def get_initial_state(self, batch_size = None):
         return 0, 0
