@@ -4,10 +4,11 @@ import torch.nn.functional as F
 from ntm.controller import Controller
 from ntm.memory import Memory
 from ntm.head import ReadHead, WriteHead
+from functools import partial
 
 
 class NTM(nn.Module):
-    def __init__(self, vector_length, hidden_size, memory_size, lstm_controller=True):
+    def __init__(self, vector_length, hidden_size, memory_size, output_length = 1, lstm_controller=True, activation = 'sigmoid', **kwargs):
         super(NTM, self).__init__()
         # self.controller = Controller(lstm_controller, vector_length + 1 + memory_size[1], hidden_size)
         self.controller = Controller(lstm_controller, vector_length + memory_size[1], hidden_size)
@@ -15,7 +16,15 @@ class NTM(nn.Module):
         self.read_head = ReadHead(self.memory, hidden_size)
         self.write_head = WriteHead(self.memory, hidden_size)
         # self.fc = nn.Linear(hidden_size + memory_size[1], vector_length)
-        self.fc = nn.Linear(hidden_size + memory_size[1], 1)
+        self.fc = nn.Linear(hidden_size + memory_size[1], output_length)
+        if activation == 'linear':
+            weight, bias = kwargs['weight'], kwargs['bias']
+            self.activation = partial(F.linear, weight = weight, bias = bias)
+        # elif activation == 'sigmoid':
+        elif activation=='relu':
+            self.activation = F.relu
+        else:
+            self.activation = F.sigmoid
         nn.init.xavier_uniform_(self.fc.weight, gain=1)
         nn.init.normal_(self.fc.bias, std=0.01)
 
@@ -38,4 +47,5 @@ class NTM(nn.Module):
         write_head_state = self.write_head(controller_output, previous_write_head_state)
         fc_input = torch.cat((controller_output, read_head_output), dim=1)
         state = (read_head_output, read_head_state, write_head_state, controller_state)
-        return F.sigmoid(self.fc(fc_input)), state
+        # return F.sigmoid(self.fc(fc_input)), state
+        return self.activation(self.fc(fc_input)), state
