@@ -16,6 +16,8 @@ from datetime import datetime
 parser = argparse.ArgumentParser(description="Process some integers.")
 parser.add_argument("--train", help="Trains the model", action="store_true")
 parser.add_argument("--ff", help="Feed forward controller", action="store_true")
+parser.add_argument("--lstm_only", help="Feed forward controller", action="store_true")
+parser.add_argument("--fm", help="Feed forward controller", action="store_true")
 parser.add_argument("--eval", help="Evaluates the model. Default path is models/copy.pt", action="store_true")
 parser.add_argument("--modelpath", help="Specify the model path to load, for training or evaluation", type=str)
 parser.add_argument("--epochs", help="Specify the number of epochs for training", type=int, default=100)
@@ -26,12 +28,42 @@ random.seed(seed)
 np.random.seed(seed)
 torch.manual_seed(seed)
 
-csv_paths = glob.glob(os.path.join('..', 'data', 'KT4', '*.csv'))
-with open(os.path.join('..', 'data', 'tags_map.pickle'), 'rb') as handle:
+
+class LSTM(torch.nn.Module):
+
+    def __init__(self, vector_length, hidden_size, output_length):
+        super(LSTM, self).__init__()
+        self.lstm = torch.nn.LSTM(input_size=vector_length, hidden_size=hidden_size)
+        # The hidden state is a learned parameter
+        self.lstm_h_state = torch.nn.Parameter(torch.randn(1, 1, hidden_size) * 0.05)
+        self.lstm_c_state = torch.nn.Parameter(torch.randn(1, 1, hidden_size) * 0.05)
+        for p in self.lstm.parameters():
+            if p.dim() == 1:
+                torch.nn.init.constant_(p, 0)
+            else:
+                stdev = 5 / (np.sqrt(vector_length + hidden_size))
+                torch.nn.init.uniform_(p, -stdev, stdev)
+
+        # The linear layer that maps from hidden state space to tag space
+        self.linear = torch.nn.Linear(hidden_size, output_length)
+
+    def forward(self, x, state):
+        output, state = self.lstm(x.unsqueeze(0), state)
+        output = self.linear(output)
+        return output.squeeze(0), state
+    
+    def get_initial_state(self, batch_size):
+        lstm_h = self.lstm_h_state.clone().repeat(1, batch_size, 1)
+        lstm_c = self.lstm_c_state.clone().repeat(1, batch_size, 1)
+        return lstm_h, lstm_c
+
+
+csv_paths = glob.glob(os.path.join('data', 'KT4', '*.csv'))
+with open(os.path.join('data', 'tags_map.pickle'), 'rb') as handle:
     tags_map = pickle.load(handle)
 default_sources = {'review_quiz': 1, 'archive': 2, 'my_note': 3, 'tutor': 4, 'diagnosis': 5, 'adaptive_offer': 6, 'review': 7, 'sprint': 8}
 default_actions = {'play_audio': 1, 'play_video': 2}
-questions_df = pd.read_csv(os.path.join('..', 'data', 'questions.csv'))
+questions_df = pd.read_csv(os.path.join('data', 'questions.csv'))
 # lectures_df = pd.read_csv(os.path.join('contents', 'lectures.csv'))
 def get_bundle_id(item_id, previous_bundle_id):
   """
@@ -120,6 +152,26 @@ def get_features(df, max_elapsed_time):
 #     return input, output
 
 
+def get_ednet(users = 100):
+  """
+  Get EdNet features
+  """
+  X, Y = [], []
+  i = 0
+  for csv_path in csv_paths:
+    df = pd.read_csv(csv_path)
+    if not df['user_answer'].isna().all():
+      # actions, source, tags, elapsed_time, correctness = get_features(df, 1.)
+      actions, source, tags, elapsed_time, correctness = get_features(df, 40_000)
+      x = np.hstack([actions, source, tags, elapsed_time])
+      X.append(x)
+      Y.append(correctness[..., np.newaxis])
+      i+=1
+    if i==users:
+      break
+  return X, Y
+
+
 def train(epochs=10):
     tensorboard_log_folder = f"runs/copy-task-{datetime.now().strftime('%Y-%m-%dT%H%M%S')}"
     writer = SummaryWriter(tensorboard_log_folder)
@@ -142,23 +194,28 @@ def train(epochs=10):
     writer.add_scalar("seed", seed)
     writer.add_scalar("batch_size", batch_size)
 
-    model = NTM(vector_length, hidden_layer_size, memory_size, lstm_controller)
+    if args.lstm_only:
+        model = LSTM(vector_length, hidden_layer_size, 1)
+    else:
+        # model = NTM(vector_length, hidden_layer_size, memory_size, lstm_controller, output_layer='fm')
+        model = NTM(vector_length, hidden_layer_size, memory_size, 1, lstm_controller)
 
     optimizer = optim.RMSprop(model.parameters(), momentum=0.9, alpha=0.95, lr=1e-4)
-    feedback_frequency = 100
+    feedback_frequency = 10
     total_loss = []
     total_cost = []
 
-    X, Y = [], []
-    for csv_path in csv_paths[:100]:
-        df = pd.read_csv(csv_path)
-        # actions, source, tags, elapsed_time, correctness = get_features(df, 1.)
-        print(csv_path)
-        actions, source, tags, elapsed_time, correctness = get_features(df, 40_000)
-        # print(actions.shape, source.shape, tags.shape, elapsed_time.shape)
-        x = np.hstack([actions, source, tags, elapsed_time])
-        X.append(x)
-        Y.append(correctness)
+    X, Y = get_ednet()
+    # X, Y = [], []
+    # for csv_path in csv_paths[:100]:
+    #     df = pd.read_csv(csv_path)
+    #     # actions, source, tags, elapsed_time, correctness = get_features(df, 1.)
+    #     print(csv_path)
+    #     actions, source, tags, elapsed_time, correctness = get_features(df, 40_000)
+    #     # print(actions.shape, source.shape, tags.shape, elapsed_time.shape)
+    #     x = np.hstack([actions, source, tags, elapsed_time])
+    #     X.append(x)
+    #     Y.append(correctness)
 
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     print(device)
@@ -171,71 +228,52 @@ def train(epochs=10):
         model.load_state_dict(checkpoint)
     model.to(device)
     for epoch in range(epochs + 1):
-        print('Next epoch')
-        optimizer.zero_grad()
-        for x, y in zip(X[:10 + 1], Y[:10 + 1]):
-            # x, y = x[np.newaxis, ...], y[np.newaxis, ..., np.newaxis]
-            y = y[..., np.newaxis]
-            x = torch.from_numpy(x).float()
-            target = torch.from_numpy(y).float()
-            # optimizer.zero_grad()
-            batch_size = x.shape[0]
-            x, target = x.to(device), target.to(device)
-            state = model.get_initial_state(batch_size)
-            # for vector in x:
-            #   _, state = model(vector, state)
-            y_out, state = model(x, state)
-            # y_out = torch.zeros(target.size())
-            # for j in range(len(target)):
-                ## y_out[j], state = model(torch.zeros(batch_size, vector_length + 1), state)
-                # y_out[j], state = model(torch.zeros(batch_size, vector_length), state)
-            loss = F.binary_cross_entropy(y_out, target)
-            loss.backward()
-            optimizer.step()
-            total_loss.append(loss.item())
-            y_out_binarized = y_out.clone().data
-            # y_out_binarized.apply_(lambda x: 0 if x < 0.5 else 1)
-            y_out_binarized = torch.where(y_out_binarized<0.5, 0, 1)
-            cost = torch.sum(torch.abs(y_out_binarized - target)) / len(target)
-            total_cost.append(cost.item())
-        # if epoch % feedback_frequency == 0:
-        running_loss = sum(total_loss) / len(total_loss)
-        running_cost = sum(total_cost) / len(total_cost)
-        print(f"Loss at step {epoch}: {running_loss}")
-        if epoch % feedback_frequency == 0:
-          writer.add_scalar('training loss', running_loss, epoch)
-          writer.add_scalar('training cost', running_cost, epoch)
-          total_loss = []
-          total_cost = []
-
-
-    # for epoch in range(epochs + 1):
-    #     optimizer.zero_grad()
-    #     input, target = get_training_sequence(sequence_min_length, sequence_max_length, vector_length, batch_size)
-    #     state = model.get_initial_state(batch_size)
-    #     for vector in input:
-    #         _, state = model(vector, state)
-    #     y_out = torch.zeros(target.size())
-    #     for j in range(len(target)):
-    #         y_out[j], state = model(torch.zeros(batch_size, vector_length + 1), state)
-    #     loss = F.binary_cross_entropy(y_out, target)
-    #     loss.backward()
-    #     optimizer.step()
-    #     total_loss.append(loss.item())
-    #     y_out_binarized = y_out.clone().data
-    #     y_out_binarized.apply_(lambda x: 0 if x < 0.5 else 1)
-    #     cost = torch.sum(torch.abs(y_out_binarized - target)) / len(target)
-    #     total_cost.append(cost.item())
-    #     if epoch % feedback_frequency == 0:
-    #         running_loss = sum(total_loss) / len(total_loss)
-    #         running_cost = sum(total_cost) / len(total_cost)
-    #         print(f"Loss at step {epoch}: {running_loss}")
-    #         writer.add_scalar('training loss', running_loss, epoch)
-    #         writer.add_scalar('training cost', running_cost, epoch)
-    #         total_loss = []
-    #         total_cost = []
+        try:
+          print('Next epoch')
+          optimizer.zero_grad()
+          for x, y in zip(X[:10], Y[:10]):
+              # x, y = x[np.newaxis, ...], y[np.newaxis, ..., np.newaxis]
+              # y = y[..., np.newaxis]
+              x = torch.from_numpy(x).float()
+              target = torch.from_numpy(y).float()
+              # optimizer.zero_grad()
+              batch_size = x.shape[0]
+              x, target = x.to(device), target.to(device)
+              state = model.get_initial_state(batch_size)
+              # for vector in x:
+              #   _, state = model(vector, state)
+              y_out, state = model(x, state)
+              # y_out = torch.zeros(target.size())
+              # for j in range(len(target)):
+                  ## y_out[j], state = model(torch.zeros(batch_size, vector_length + 1), state)
+                  # y_out[j], state = model(torch.zeros(batch_size, vector_length), state)
+              loss = F.binary_cross_entropy(y_out, target)
+              loss.backward()
+              optimizer.step()
+              total_loss.append(loss.item())
+              y_out_binarized = y_out.clone().data
+              # y_out_binarized.apply_(lambda x: 0 if x < 0.5 else 1)
+              y_out_binarized = torch.where(y_out_binarized<0.5, 0, 1)
+              cost = torch.sum(torch.abs(y_out_binarized - target)) / len(target)
+              total_cost.append(cost.item())
+          # if epoch % feedback_frequency == 0:
+          running_loss = sum(total_loss) / len(total_loss)
+          running_cost = sum(total_cost) / len(total_cost)
+          print(f"Loss at step {epoch}: {running_loss}")
+          if epoch % feedback_frequency == 0:
+            writer.add_scalar('training loss', running_loss, epoch)
+            writer.add_scalar('training cost', running_cost, epoch)
+            total_loss = []
+            total_cost = []
+            model_name, model_type = os.path.splitext(model_path)
+            model_epoch_path = model_name + f'_{epoch}'+ model_type
+            torch.save(model.state_dict(), model_epoch_path)    
+            print(f'{model_epoch_path} saved')
+        except KeyboardInterrupt:
+           break
 
     torch.save(model.state_dict(), model_path)
+    print(f'{model_epoch_path} saved')
 
 
 def eval(model_path):
@@ -245,22 +283,24 @@ def eval(model_path):
     # hidden_layer_size = 100
     hidden_layer_size = 10
     lstm_controller = not args.ff
-
-    X, Y = [], []
-    for csv_path in csv_paths[:100]:
-        df = pd.read_csv(csv_path)
-        # actions, source, tags, elapsed_time, correctness = get_features(df, 1.)
-        print(csv_path)
-        actions, source, tags, elapsed_time, correctness = get_features(df, 40_000)
-        # print(actions.shape, source.shape, tags.shape, elapsed_time.shape)
-        x = np.hstack([actions, source, tags, elapsed_time])
-        X.append(x)
-        Y.append(correctness)
+    
+    X, Y = get_ednet()
+    # X, Y = [], []
+    # for csv_path in csv_paths[:100]:
+    #     df = pd.read_csv(csv_path)
+    #     # actions, source, tags, elapsed_time, correctness = get_features(df, 1.)
+    #     print(csv_path)
+    #     actions, source, tags, elapsed_time, correctness = get_features(df, 40_000)
+    #     # print(actions.shape, source.shape, tags.shape, elapsed_time.shape)
+    #     x = np.hstack([actions, source, tags, elapsed_time])
+    #     X.append(x)
+    #     Y.append(correctness)
 
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     print(device)
 
-    model = NTM(vector_length, hidden_layer_size, memory_size, lstm_controller)
+    # model = NTM(vector_length, hidden_layer_size, memory_size, lstm_controller=True, output_layer='fm')
+    model = NTM(vector_length, hidden_layer_size, memory_size)
 
     print(f"Loading model from {model_path}")
     # checkpoint = torch.load(model_path, map_location=device)
@@ -269,9 +309,9 @@ def eval(model_path):
     model.eval()
 
     results = []
-    for x, y in zip(X[:10 + 1], Y[:10 + 1]):
+    for x, y in zip(X[10:], Y[10:]):
       # x, y = x[np.newaxis, ...], y[np.newaxis, ..., np.newaxis]
-      y = y[..., np.newaxis]
+      # y = y[..., np.newaxis]
       x = torch.from_numpy(x).float()
       target = torch.from_numpy(y).float()
       # optimizer.zero_grad()
@@ -283,7 +323,7 @@ def eval(model_path):
       y_out, state = model(x, state)
       y_out_binarized = y_out.clone().data
       y_out_binarized = torch.where(y_out_binarized<0.5, 0, 1)
-      print(torch.sum(y_out_binarized == target)/target.shape[0])
+    #   print(torch.sum(y_out_binarized == target)/target.shape[0])
       results.extend((y_out_binarized == target).squeeze(1).tolist())
       print(sum(results)/len(results))
       # plot_copy_results(target, y_out, vector_length)
@@ -305,7 +345,12 @@ def eval(model_path):
 
 if __name__ == "__main__":
     # model_path = "models/copy.pt"
-    model_path = "models/kt.pt"
+    
+    if not args.lstm_only:
+       # model_path = "models/kt.pt"
+       model_path = "models/fm-kt.pt"
+    else:
+       model_path = "models/lstm-kt.pt"
     if args.modelpath:
         model_path = args.modelpath
     if args.train:

@@ -7,6 +7,23 @@ from ntm.head import ReadHead, WriteHead
 from functools import partial
 
 
+class FM(nn.Module):
+    def __init__(self, features_num=None, k=2):
+        super().__init__()
+        self.weight = nn.Parameter(torch.randn(features_num, k), requires_grad=True)
+        self.bias = nn.Parameter(torch.randn(1, 1), requires_grad=True)
+        torch.nn.init.xavier_uniform_(self.weight.data)
+        torch.nn.init.xavier_uniform_(self.bias.data)
+        self.linear = nn.Linear(features_num, 1)
+
+    def forward(self, X):
+        out_1 = ((X @ self.weight) ** 2).sum(1, keepdim=True) + self.bias
+        out_2 = ((X ** 2) @ (self.weight ** 2)).sum(1, keepdim=True)
+
+        out_interaction = (out_1 - out_2) / 2
+        out_linear = self.linear(X)
+        return out_interaction + out_linear
+
 class NTM(nn.Module):
     def __init__(self, vector_length, hidden_size, memory_size, output_length = 1, lstm_controller=True, activation = 'sigmoid', **kwargs):
         super(NTM, self).__init__()
@@ -16,7 +33,11 @@ class NTM(nn.Module):
         self.read_head = ReadHead(self.memory, hidden_size)
         self.write_head = WriteHead(self.memory, hidden_size)
         # self.fc = nn.Linear(hidden_size + memory_size[1], vector_length)
-        self.fc = nn.Linear(hidden_size + memory_size[1], output_length)
+        output_layer = kwargs.get('output_layer', 'fc')
+        if output_layer=='fm':
+            self.fc = FM(hidden_size + memory_size[1], k = 5)
+        else:    
+            self.fc = nn.Linear(hidden_size + memory_size[1], output_length)
         if activation == 'linear':
             weight, bias = kwargs['weight'], kwargs['bias']
             self.activation = partial(F.linear, weight = weight, bias = bias)
@@ -48,4 +69,10 @@ class NTM(nn.Module):
         fc_input = torch.cat((controller_output, read_head_output), dim=1)
         state = (read_head_output, read_head_state, write_head_state, controller_state)
         # return F.sigmoid(self.fc(fc_input)), state
+        # print('Contrtoller output:', controller_output.mean(), controller_output.std())
+        # print((controller_output<1e-6).cpu().numpy().mean())
+        # print('Read Head output:', read_head_output.mean(), read_head_output.std())
+        # print(read_head_output.mean(axis = 1), read_head_output.std(axis = 1))
+        # print((read_head_output<1e-6).cpu().numpy().mean())
+        # print(self.read_head.memory.read())
         return self.activation(self.fc(fc_input)), state
