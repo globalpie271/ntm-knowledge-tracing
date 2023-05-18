@@ -57,13 +57,41 @@ class LSTM(torch.nn.Module):
         lstm_c = self.lstm_c_state.clone().repeat(1, batch_size, 1)
         return lstm_h, lstm_c
 
-
-csv_paths = glob.glob(os.path.join('data', 'KT4', '*.csv'))
-with open(os.path.join('data', 'tags_map.pickle'), 'rb') as handle:
-    tags_map = pickle.load(handle)
-default_sources = {'review_quiz': 1, 'archive': 2, 'my_note': 3, 'tutor': 4, 'diagnosis': 5, 'adaptive_offer': 6, 'review': 7, 'sprint': 8}
-default_actions = {'play_audio': 1, 'play_video': 2}
 questions_df = pd.read_csv(os.path.join('data', 'questions.csv'))
+csv_paths = glob.glob(os.path.join('data', 'KT4', '*.csv'))
+
+i, limit=0, 100
+dfs = dict()
+for csv_path in csv_paths:
+    df = pd.read_csv(csv_path)
+    if not df['user_answer'].isna().all():
+      user_id = os.path.splitext(os.path.basename(csv_path))[0]
+      dfs[csv_path] = df
+      dfs[csv_path]['user_id'] = user_id
+      i+=1
+    if i==limit:
+      break
+
+dataset_df = pd.concat(dfs.values())
+dataset_df = pd.merge(dataset_df, questions_df, left_on = 'item_id', right_on = 'question_id', how = 'left')
+
+# default_sources = {'review_quiz': 1, 'archive': 2, 'my_note': 3, 'tutor': 4, 'diagnosis': 5, 'adaptive_offer': 6, 'review': 7, 'sprint': 8}
+# default_actions = {'play_audio': 1, 'play_video': 2, }
+default_actions = {action_type: i for i, action_type in enumerate(dataset_df.action_type.dropna().unique())}
+default_sources = {source_type: i for i, source_type in enumerate(dataset_df.source.dropna().unique())}
+
+tags = set()
+dataset_df[dataset_df['item_id'].str.startswith('q')]['tags'].str.split(';').apply(lambda tags_list: [tags.add(int(tag)) for tag in tags_list])
+tags_map = dict(zip(sorted(tags), range(1, len(tags) + 1)))
+
+
+
+# csv_paths = glob.glob(os.path.join('data', 'KT4', '*.csv'))
+# with open(os.path.join('data', 'tags_map.pickle'), 'rb') as handle:
+#     tags_map = pickle.load(handle)
+# default_sources = {'review_quiz': 1, 'archive': 2, 'my_note': 3, 'tutor': 4, 'diagnosis': 5, 'adaptive_offer': 6, 'review': 7, 'sprint': 8}
+# default_actions = {'play_audio': 1, 'play_video': 2}
+# questions_df = pd.read_csv(os.path.join('data', 'questions.csv'))
 # lectures_df = pd.read_csv(os.path.join('contents', 'lectures.csv'))
 def get_bundle_id(item_id, previous_bundle_id):
   """
@@ -163,7 +191,8 @@ def get_ednet(users = 100):
     if not df['user_answer'].isna().all():
       # actions, source, tags, elapsed_time, correctness = get_features(df, 1.)
       actions, source, tags, elapsed_time, correctness = get_features(df, 40_000)
-      x = np.hstack([actions, source, tags, elapsed_time])
+      # x = np.hstack([actions, source, tags, elapsed_time])
+      x = np.hstack([actions, source, elapsed_time])
       X.append(x)
       Y.append(correctness[..., np.newaxis])
       i+=1
@@ -171,18 +200,43 @@ def get_ednet(users = 100):
       break
   return X, Y
 
+def test_eval(X,Y, model, device):
+  results = []
+  for x, y in zip(X[10:], Y[10:]):
+    # x, y = x[np.newaxis, ...], y[np.newaxis, ..., np.newaxis]
+    # y = y[..., np.newaxis]
+    x = torch.from_numpy(x).float()
+    target = torch.from_numpy(y).float()
+    x, target = x.to(device), target.to(device)
+    # optimizer.zero_grad()
+    batch_size = x.shape[0]
+    # x, target = x.to(device), target.to(device)
+    state = model.get_initial_state(batch_size)
+    # for vector in x:
+    #   _, state = model(vector, state)
+    y_out, state = model(x, state)
+    y_out_binarized = y_out.clone().data
+    y_out_binarized = torch.where(y_out_binarized<0.5, 0, 1)
+  #   print(torch.sum(y_out_binarized == target)/target.shape[0])
+    results.extend((y_out_binarized == target).squeeze(1).tolist())
+  # print(sum(results)/len(results))
+  return sum(results)/len(results)
 
 def train(epochs=10):
+    train_length, length = 10, 100
+    X, Y = get_ednet(length)
+    
     tensorboard_log_folder = f"runs/copy-task-{datetime.now().strftime('%Y-%m-%dT%H%M%S')}"
     writer = SummaryWriter(tensorboard_log_folder)
     print(f"Training for {epochs} epochs, logging in {tensorboard_log_folder}")
     sequence_min_length = 1
     sequence_max_length = 20
-    vector_length = 199
-    memory_size = (128, 20)
+    vector_length = X[0].shape[-1]
+    memory_size = (10, 10)
     hidden_layer_size = 10
     batch_size = 1
     lstm_controller = not args.ff
+    fm_activation = args.fm
 
     writer.add_scalar("sequence_min_length", sequence_min_length)
     writer.add_scalar("sequence_max_length", sequence_max_length)
@@ -198,14 +252,15 @@ def train(epochs=10):
         model = LSTM(vector_length, hidden_layer_size, 1)
     else:
         # model = NTM(vector_length, hidden_layer_size, memory_size, lstm_controller, output_layer='fm')
-        model = NTM(vector_length, hidden_layer_size, memory_size, 1, lstm_controller)
+        # model = NTM(vector_length, hidden_layer_size, memory_size, 1, lstm_controller, output_layer='fm')
+        model = NTM(vector_length, hidden_layer_size, memory_size, 1, lstm_controller, output_layer='fm' if fm_activation else 'fc')
+        # model = NTM(vector_length, hidden_layer_size, memory_size, 1, lstm_controller)
 
     optimizer = optim.RMSprop(model.parameters(), momentum=0.9, alpha=0.95, lr=1e-4)
     feedback_frequency = 10
     total_loss = []
     total_cost = []
 
-    X, Y = get_ednet()
     # X, Y = [], []
     # for csv_path in csv_paths[:100]:
     #     df = pd.read_csv(csv_path)
@@ -229,9 +284,8 @@ def train(epochs=10):
     model.to(device)
     for epoch in range(epochs + 1):
         try:
-          print('Next epoch')
           optimizer.zero_grad()
-          for x, y in zip(X[:10], Y[:10]):
+          for x, y in zip(X[:train_length], Y[:train_length]):
               # x, y = x[np.newaxis, ...], y[np.newaxis, ..., np.newaxis]
               # y = y[..., np.newaxis]
               x = torch.from_numpy(x).float()
@@ -247,6 +301,7 @@ def train(epochs=10):
               # for j in range(len(target)):
                   ## y_out[j], state = model(torch.zeros(batch_size, vector_length + 1), state)
                   # y_out[j], state = model(torch.zeros(batch_size, vector_length), state)
+              # loss = F.mse_loss(y_out, target)
               loss = F.binary_cross_entropy(y_out, target)
               loss.backward()
               optimizer.step()
@@ -257,10 +312,15 @@ def train(epochs=10):
               cost = torch.sum(torch.abs(y_out_binarized - target)) / len(target)
               total_cost.append(cost.item())
           # if epoch % feedback_frequency == 0:
-          running_loss = sum(total_loss) / len(total_loss)
-          running_cost = sum(total_cost) / len(total_cost)
-          print(f"Loss at step {epoch}: {running_loss}")
+          # running_loss = sum(total_loss) / len(total_loss)
+          # running_cost = sum(total_cost) / len(total_cost)
+          # print(f"Loss at step {epoch}: {running_loss}")
           if epoch % feedback_frequency == 0:
+            running_loss = sum(total_loss) / len(total_loss)
+            running_cost = sum(total_cost) / len(total_cost)
+            print(f"Loss at step {epoch}: {running_loss}")
+            print(f"Cost at step {epoch}: {running_cost}")
+            print(f"Test accuracy at {epoch}: {test_eval(X[train_length:], Y[train_length:], model, device)}")
             writer.add_scalar('training loss', running_loss, epoch)
             writer.add_scalar('training cost', running_cost, epoch)
             total_loss = []
@@ -278,13 +338,14 @@ def train(epochs=10):
 
 def eval(model_path):
     # vector_length = 8
-    vector_length = 199
-    memory_size = (128, 20)
+    X, Y = get_ednet()
+    vector_length = X[0].shape[-1]
+    memory_size = (10, 10)
     # hidden_layer_size = 100
     hidden_layer_size = 10
     lstm_controller = not args.ff
+    fm_activation = args.fm
     
-    X, Y = get_ednet()
     # X, Y = [], []
     # for csv_path in csv_paths[:100]:
     #     df = pd.read_csv(csv_path)
@@ -300,7 +361,12 @@ def eval(model_path):
     print(device)
 
     # model = NTM(vector_length, hidden_layer_size, memory_size, lstm_controller=True, output_layer='fm')
-    model = NTM(vector_length, hidden_layer_size, memory_size)
+    # model = NTM(vector_length, hidden_layer_size, memory_size, 1, lstm_controller=True, output_layer='fc')
+    # model = NTM(vector_length, hidden_layer_size, memory_size, 1, lstm_controller=True, output_layer='fm')
+    # model = NTM(vector_length, hidden_layer_size, memory_size, 1, lstm_controller, output_layer='fm')
+    print('fm' if fm_activation else 'fc')
+    model = NTM(vector_length, hidden_layer_size, memory_size, 1, lstm_controller, output_layer='fm' if fm_activation else 'fc')
+    # model = NTM(vector_length, hidden_layer_size, memory_size, 1, lstm_controller, output_layer='fc')
 
     print(f"Loading model from {model_path}")
     # checkpoint = torch.load(model_path, map_location=device)

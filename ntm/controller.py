@@ -15,6 +15,7 @@ class Controller(nn.Module):
         else:
             # self._controller = FeedForwardController(vector_length, hidden_size)
             self._controller = TransformerEncoderController(vector_length, hidden_size)
+            # self._controller = TransformerEncoderController(vector_length, hidden_size)
 
     def forward(self, x, state):
         return self._controller(x, state)
@@ -64,6 +65,24 @@ class FeedForwardController(nn.Module):
     def get_initial_state(self, batch_size = None):
         return 0, 0
 
+class MultiheadAttentionController(nn.Module):
+    """
+    Multhead attention controller
+    """
+    def __init__(self, vector_length, hidden_size, nhead = 1, dropout = 0):
+        super(TransformerEncoderController, self).__init__()
+        # self.encoder_layer = nn.TransformerEncoderLayer(d_model = vector_length, nhead = nhead)
+        self.attention = nn.MultiheadAttention(vector_length, nhead, dropout)
+        # self.linear = nn.Linear(vector_length, hidden_size)
+        # self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers = num_layers)
+
+    def forward(self, x, state):
+        output, attn_output_weights = self.attention(x)
+        return output, state
+    def get_initial_state(self, batch_size = None):
+        return 0, 0
+
+
 class TransformerEncoderController(nn.Module):
     """
     Transformer encoder controller
@@ -82,3 +101,40 @@ class TransformerEncoderController(nn.Module):
         return output, state
     def get_initial_state(self, batch_size = None):
         return 0, 0
+
+class FactorizationMachineController(nn.Module):
+    """
+    Factorization machine controller
+    """
+    def __init__(self, vector_length, hidden_size, nhead = 1, num_layers = 1, k = 5):
+        super(FactorizationMachineController, self).__init__()
+        self.v = nn.Parameter(torch.randn(vector_length, k), requires_grad=True)
+        torch.nn.init.xavier_uniform_(self.V.data)
+        self.linear = nn.Linear(vector_length, 1)
+        # self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers = num_layers)
+
+    def forward(self, x, state):
+        out_1 = ((x @ self.v) ** 2).sum(1, keepdim=True)
+        out_2 = ((x ** 2) @ (self.v ** 2)).sum(1, keepdim=True)
+
+        out_interaction = (out_1 - out_2) / 2
+        out_linear = self.linear(x)
+        return out_interaction + out_linear, state
+    def get_initial_state(self, batch_size = None):
+        return 0, 0
+
+
+class FM(nn.Module):
+    def __init__(self, features_num=None, k=2):
+        super().__init__()
+        self.V = nn.Parameter(torch.randn(features_num, k), requires_grad=True)
+        torch.nn.init.xavier_uniform_(self.V.data)
+        self.linear = nn.Linear(features_num, 1)
+
+    def forward(self, X):
+        out_1 = ((X @ self.V) ** 2).sum(1, keepdim=True)
+        out_2 = ((X ** 2) @ (self.V ** 2)).sum(1, keepdim=True)
+
+        out_interaction = (out_1 - out_2) / 2
+        out_linear = self.linear(X)
+        return out_interaction + out_linear
