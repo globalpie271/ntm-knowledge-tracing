@@ -63,6 +63,7 @@ class LSTM(torch.nn.Module):
         return lstm_h, lstm_c
 
 questions_df = pd.read_csv(os.path.join('data', 'questions.csv'))
+# csv_paths = glob.glob(os.path.join('data', 'assistments', '*.csv'))
 csv_paths = glob.glob(os.path.join('data', 'KT4', '*.csv'))
 
 i, limit=0, 200
@@ -80,8 +81,13 @@ for csv_path in csv_paths:
 dataset_df = pd.concat(dfs.values())
 dataset_df = pd.merge(dataset_df, questions_df, left_on = 'item_id', right_on = 'question_id', how = 'left')
 
-# default_sources = {'review_quiz': 1, 'archive': 2, 'my_note': 3, 'tutor': 4, 'diagnosis': 5, 'adaptive_offer': 6, 'review': 7, 'sprint': 8}
-# default_actions = {'play_audio': 1, 'play_video': 2, }
+
+# default_problem_type = {action_type: i for i, action_type in enumerate(dataset_df.problem_type.dropna().unique())}
+# default_first_action = {source_type: i for i, source_type in enumerate(dataset_df.first_action.dropna().unique())}
+# default_original = {source_type: i for i, source_type in enumerate(dataset_df.original.dropna().unique())}
+# default_bottom_hint = {source_type: i for i, source_type in enumerate(dataset_df.bottom_hint.dropna().unique())}
+# default_type = {source_type: i for i, source_type in enumerate(dataset_df.type.dropna().unique())}
+
 default_actions = {action_type: i for i, action_type in enumerate(dataset_df.action_type.dropna().unique())}
 default_sources = {source_type: i for i, source_type in enumerate(dataset_df.source.dropna().unique())}
 
@@ -139,6 +145,23 @@ def get_sparse(categories, length = 2, norm=True):
 def one_hot(values, length):
   return np.eye(length)[values]
 
+def get_assistments_features(df,max_elapsed_time = 26084889758.0):
+  df = df[['problem_type', 'first_action', 'original', 'bottom_hint', 'type', 'start_time', 'end_time', 'correct']].dropna()
+  elapsed_time = (pd.to_datetime(df.end_time) - pd.to_datetime(df.start_time)).apply(lambda x: x.total_seconds()*1e3)/max_elapsed_time
+  problem_type = df['problem_type'].apply(lambda actions: default_problem_type[actions]).to_list()
+  problem_type = one_hot(problem_type, len(default_problem_type))
+  first_action = df['first_action'].apply(lambda actions: default_first_action[actions]).to_list()
+  first_action = one_hot(first_action, len(default_first_action))
+  original = df['original'].apply(lambda actions: default_original[actions]).to_list()
+  original = one_hot(original, len(default_original))
+  bottom_hint = df['bottom_hint'].apply(lambda actions: default_bottom_hint[actions]).to_list()
+  bottom_hint = one_hot(bottom_hint, len(default_bottom_hint))
+  type_value = df['type'].apply(lambda actions: default_type[actions]).to_list()
+  type_value = one_hot(type_value, len(default_type))
+  correct = df['correct']
+
+  return problem_type, first_action, original, bottom_hint, type_value, np.array(elapsed_time)[..., np.newaxis], correct
+
 def get_features(df, max_elapsed_time):
   # Merge with questions_df
   df = pd.merge(df, questions_df, left_on = 'item_id', right_on = 'question_id', how = 'left')
@@ -183,6 +206,27 @@ def get_features(df, max_elapsed_time):
 #     input[:sequence_length, :, :vector_length] = output
 #     input[sequence_length, :, vector_length] = 1.0
 #     return input, output
+
+def get_assistments(users = 100):
+  """
+  Get Assistments features
+  """
+  X, Y = [], []
+  i = 0
+  for csv_path in csv_paths:
+    df = pd.read_csv(csv_path)
+    # actions, source, tags, elapsed_time, correctness = get_features(df, 1.)
+    problem_type, first_action, original, bottom_hint, type_value, elapsed_time, correct = get_assistments_features(user_df)
+    x = np.hstack([problem_type, first_action, original, bottom_hint, type_value, elapsed_time])
+    # x = np.hstack([actions, source, tags, elapsed_time])
+    # x = np.hstack([actions, source, elapsed_time])
+    # x = np.hstack([actions, elapsed_time])
+    X.append(x)
+    Y.append(correct[..., np.newaxis])
+    i+=1
+    if i==users:
+      break
+  return X, Y
 
 
 def get_ednet(users = 100):
