@@ -274,7 +274,8 @@ def train(epochs=10):
         model = NTM(vector_length, hidden_layer_size, memory_size, 1, lstm_controller, output_layer='fm' if fm_activation else 'fc')
         # model = NTM(vector_length, hidden_layer_size, memory_size, 1, lstm_controller)
 
-    optimizer = optim.RMSprop(model.parameters(), momentum=0.9, alpha=0.95, lr=1e-4)
+    # optimizer = optim.RMSprop(model.parameters(), momentum=0.9, alpha=0.95, lr=1e-4)
+    optimizer = optim.Adam(model.parameters())
     feedback_frequency = 10
     total_loss = []
     total_cost = []
@@ -300,9 +301,12 @@ def train(epochs=10):
         checkpoint = torch.load(model_path, map_location=device)
         model.load_state_dict(checkpoint)
     model.to(device)
+    loss_fn = torch.nn.CrossEntropyLoss()
     for epoch in range(epochs + 1):
+        optimizer.zero_grad()
+        losses = []
+        # losses = 0
         try:
-          optimizer.zero_grad()
           for x, y in zip(X[:train_length], Y[:train_length]):
               # x, y = x[np.newaxis, ...], y[np.newaxis, ..., np.newaxis]
               # y = y[..., np.newaxis]
@@ -320,9 +324,12 @@ def train(epochs=10):
                   ## y_out[j], state = model(torch.zeros(batch_size, vector_length + 1), state)
                   # y_out[j], state = model(torch.zeros(batch_size, vector_length), state)
               # loss = F.mse_loss(y_out, target)
-              loss = F.binary_cross_entropy(y_out, target)
-              loss.backward()
-              optimizer.step()
+              # losses+=F.mse_loss(y_out, target)
+              # loss = F.binary_cross_entropy(y_out, target)
+              loss = loss_fn(y_out, target)
+              losses.append(loss)
+              # loss.backward()
+              # optimizer.step()
               total_loss.append(loss.item())
               y_out_binarized = y_out.clone().data
               # y_out_binarized.apply_(lambda x: 0 if x < 0.5 else 1)
@@ -350,6 +357,9 @@ def train(epochs=10):
             print(f'{model_epoch_path} saved')
         except KeyboardInterrupt:
            break
+        losses = sum(losses)
+        losses.backward()
+        optimizer.step()
 
     torch.save(model.state_dict(), model_path)
     print(f'{model_epoch_path} saved')
