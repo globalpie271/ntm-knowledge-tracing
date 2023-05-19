@@ -97,7 +97,7 @@ class TransformerEncoderController(nn.Module):
         x1 = self.encoder_layer(x)
         x2 = self.linear(x1)
         # output = F.softmax(x2)
-        output = torch.sigmoid(x2)
+        output = F.relu(x2)
         return output, state
     def get_initial_state(self, batch_size = None):
         return 0, 0

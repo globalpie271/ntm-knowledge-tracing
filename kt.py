@@ -2,6 +2,7 @@ import random
 import os
 import glob
 import torch
+
 import torch.optim as optim
 import torch.nn.functional as F
 from ntm.ntm import NTM
@@ -10,6 +11,10 @@ import pandas as pd
 import numpy as np
 import argparse
 import pickle
+# from torcheval.metrics.aggregation.auc import AUC
+# from torcheval.metrics import AUC, BinaryPrecision, BinaryRecall, BinaryAccuracy
+# from torcheval.metrics.functional import auc, binary_accuracy, binary_precision, binary_recall 
+from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score
 from torch.utils.tensorboard import SummaryWriter
 from datetime import datetime
 
@@ -60,7 +65,7 @@ class LSTM(torch.nn.Module):
 questions_df = pd.read_csv(os.path.join('data', 'questions.csv'))
 csv_paths = glob.glob(os.path.join('data', 'KT4', '*.csv'))
 
-i, limit=0, 100
+i, limit=0, 200
 dfs = dict()
 for csv_path in csv_paths:
     df = pd.read_csv(csv_path)
@@ -192,7 +197,8 @@ def get_ednet(users = 100):
       # actions, source, tags, elapsed_time, correctness = get_features(df, 1.)
       actions, source, tags, elapsed_time, correctness = get_features(df, 40_000)
       # x = np.hstack([actions, source, tags, elapsed_time])
-      x = np.hstack([actions, source, elapsed_time])
+      # x = np.hstack([actions, source, elapsed_time])
+      x = np.hstack([actions, elapsed_time])
       X.append(x)
       Y.append(correctness[..., np.newaxis])
       i+=1
@@ -202,7 +208,8 @@ def get_ednet(users = 100):
 
 def test_eval(X,Y, model, device):
   results = []
-  for x, y in zip(X[10:], Y[10:]):
+  y_outs = []
+  for x, y in zip(X, Y):
     # x, y = x[np.newaxis, ...], y[np.newaxis, ..., np.newaxis]
     # y = y[..., np.newaxis]
     x = torch.from_numpy(x).float()
@@ -216,12 +223,23 @@ def test_eval(X,Y, model, device):
     #   _, state = model(vector, state)
     y_out, state = model(x, state)
     y_out_binarized = y_out.clone().data
+    y_outs.append(y_out.clone().data)
     y_out_binarized = torch.where(y_out_binarized<0.5, 0, 1)
+    
   #   print(torch.sum(y_out_binarized == target)/target.shape[0])
     results.extend((y_out_binarized == target).squeeze(1).tolist())
   # print(sum(results)/len(results))
-  return sum(results)/len(results)
-
+  # print(y_outs[0].shape, Y[0].shape)
+  # Metrics
+  threshold = 0.5
+  y_outs, y_flatten = torch.cat(y_outs, 0).flatten().cpu().numpy(), torch.Tensor(np.concatenate(Y, 0)).flatten()
+  acc = accuracy_score(y_flatten, y_outs>0.5)
+  auc = roc_auc_score(y_flatten, y_outs)
+  precision = precision_score(y_flatten, y_outs>0.5)
+  recall = recall_score(y_flatten, y_outs>0.5)
+  # return sum(results)/len(results), acc.compute(), precision.compute(), recall.compute(), auc.compute()
+  return acc, precision, recall, auc
+  
 def train(epochs=10):
     train_length, length = 10, 100
     X, Y = get_ednet(length)
@@ -320,7 +338,8 @@ def train(epochs=10):
             running_cost = sum(total_cost) / len(total_cost)
             print(f"Loss at step {epoch}: {running_loss}")
             print(f"Cost at step {epoch}: {running_cost}")
-            print(f"Test accuracy at {epoch}: {test_eval(X[train_length:], Y[train_length:], model, device)}")
+            acc, precision, recall, auc = test_eval(X[train_length:], Y[train_length:], model, device)
+            print(f"Test metrics at {epoch}: {[acc, precision, recall, auc]}")
             writer.add_scalar('training loss', running_loss, epoch)
             writer.add_scalar('training cost', running_cost, epoch)
             total_loss = []
@@ -337,8 +356,9 @@ def train(epochs=10):
 
 
 def eval(model_path):
+    train_length, length = 10, 100
     # vector_length = 8
-    X, Y = get_ednet()
+    X, Y = get_ednet(length)
     vector_length = X[0].shape[-1]
     memory_size = (10, 10)
     # hidden_layer_size = 100
@@ -375,7 +395,7 @@ def eval(model_path):
     model.eval()
 
     results = []
-    for x, y in zip(X[10:], Y[10:]):
+    for x, y in zip(X[train_length:], Y[train_length:]):
       # x, y = x[np.newaxis, ...], y[np.newaxis, ..., np.newaxis]
       # y = y[..., np.newaxis]
       x = torch.from_numpy(x).float()
