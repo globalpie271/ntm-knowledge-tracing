@@ -241,9 +241,19 @@ def test_eval(X,Y, model, device):
   return acc, precision, recall, auc
   
 def train(epochs=10):
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    print(device)
     train_length, length = 10, 100
     X, Y = get_ednet(length)
-    
+    X_train = np.concatenate(X[:10], axis = 0)
+    target = np.concatenate(Y[:10], axis = 0)
+    X_test = np.concatenate(X[10:], axis = 0)
+    y_test = np.concatenate(Y[10:], axis = 0)
+
+    X_train = torch.from_numpy(X_train).float()
+    target = torch.from_numpy(target).float()
+    X_train, target = X_train.to(device), target.to(device)
+
     tensorboard_log_folder = f"runs/copy-task-{datetime.now().strftime('%Y-%m-%dT%H%M%S')}"
     writer = SummaryWriter(tensorboard_log_folder)
     print(f"Training for {epochs} epochs, logging in {tensorboard_log_folder}")
@@ -291,8 +301,7 @@ def train(epochs=10):
     #     X.append(x)
     #     Y.append(correctness)
 
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    print(device)
+    
 
     os.makedirs("models", exist_ok=True)
     if os.path.isfile(model_path):
@@ -304,38 +313,50 @@ def train(epochs=10):
     loss_fn = torch.nn.CrossEntropyLoss()
     for epoch in range(epochs + 1):
         optimizer.zero_grad()
-        losses = []
+        # losses = []
         # losses = 0
         try:
-          for x, y in zip(X[:train_length], Y[:train_length]):
-              # x, y = x[np.newaxis, ...], y[np.newaxis, ..., np.newaxis]
-              # y = y[..., np.newaxis]
-              x = torch.from_numpy(x).float()
-              target = torch.from_numpy(y).float()
-              # optimizer.zero_grad()
-              batch_size = x.shape[0]
-              x, target = x.to(device), target.to(device)
-              state = model.get_initial_state(batch_size)
-              # for vector in x:
-              #   _, state = model(vector, state)
-              y_out, state = model(x, state)
-              # y_out = torch.zeros(target.size())
-              # for j in range(len(target)):
-                  ## y_out[j], state = model(torch.zeros(batch_size, vector_length + 1), state)
-                  # y_out[j], state = model(torch.zeros(batch_size, vector_length), state)
-              # loss = F.mse_loss(y_out, target)
-              # losses+=F.mse_loss(y_out, target)
-              # loss = F.binary_cross_entropy(y_out, target)
-              loss = loss_fn(y_out, target)
-              losses.append(loss)
-              # loss.backward()
-              # optimizer.step()
-              total_loss.append(loss.item())
-              y_out_binarized = y_out.clone().data
-              # y_out_binarized.apply_(lambda x: 0 if x < 0.5 else 1)
-              y_out_binarized = torch.where(y_out_binarized<0.5, 0, 1)
-              cost = torch.sum(torch.abs(y_out_binarized - target)) / len(target)
-              total_cost.append(cost.item())
+
+          state = model.get_initial_state(X_train.shape[0])
+          y_out, state = model(X_train, state)
+          loss = F.binary_cross_entropy(y_out, target)
+          loss.backward()
+          optimizer.step()
+          # for x, y in zip(X[:train_length], Y[:train_length]):
+          #     # x, y = x[np.newaxis, ...], y[np.newaxis, ..., np.newaxis]
+          #     # y = y[..., np.newaxis]
+          #     x = torch.from_numpy(x).float()
+          #     target = torch.from_numpy(y).float()
+          #     # optimizer.zero_grad()
+          #     batch_size = x.shape[0]
+          #     x, target = x.to(device), target.to(device)
+          #     state = model.get_initial_state(batch_size)
+          #     # for vector in x:
+          #     #   _, state = model(vector, state)
+          #     y_out, state = model(x, state)
+          #     # y_out = torch.zeros(target.size())
+          #     # for j in range(len(target)):
+          #         ## y_out[j], state = model(torch.zeros(batch_size, vector_length + 1), state)
+          #         # y_out[j], state = model(torch.zeros(batch_size, vector_length), state)
+          #     # loss = F.mse_loss(y_out, target)
+          #     # losses+=F.mse_loss(y_out, target)
+          #     # loss = F.binary_cross_entropy(y_out, target)
+          #     loss = loss_fn(y_out, target)
+          #     losses.append(loss)
+          #     # loss.backward()
+          #     # optimizer.step()
+          #     total_loss.append(loss.item())
+          #     y_out_binarized = y_out.clone().data
+          #     # y_out_binarized.apply_(lambda x: 0 if x < 0.5 else 1)
+          #     y_out_binarized = torch.where(y_out_binarized<0.5, 0, 1)
+          #     cost = torch.sum(torch.abs(y_out_binarized - target)) / len(target)
+          #     total_cost.append(cost.item())
+          y_out_binarized = y_out.clone().data
+          # y_out_binarized.apply_(lambda x: 0 if x < 0.5 else 1)
+          y_out_binarized = torch.where(y_out_binarized<0.5, 0, 1)
+          cost = torch.sum(torch.abs(y_out_binarized - target)) / len(target)
+          total_loss.append(loss.item())
+          total_cost.append(cost.item())
           # if epoch % feedback_frequency == 0:
           # running_loss = sum(total_loss) / len(total_loss)
           # running_cost = sum(total_cost) / len(total_cost)
@@ -357,9 +378,9 @@ def train(epochs=10):
             print(f'{model_epoch_path} saved')
         except KeyboardInterrupt:
            break
-        losses = sum(losses)
-        losses.backward()
-        optimizer.step()
+        # losses = sum(losses)
+        # losses.backward()
+        # optimizer.step()
 
     torch.save(model.state_dict(), model_path)
     print(f'{model_epoch_path} saved')
