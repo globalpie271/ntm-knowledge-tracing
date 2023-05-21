@@ -8,4 +8,4 @@ RUN pip install -r requirements.txt
 
 COPY . /code
 
-CMD [ "python3", "copy_task.py", "--train" ]
+CMD [ "python3", "kt.py", "--train" ]
