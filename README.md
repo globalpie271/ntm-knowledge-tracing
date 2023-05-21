@@ -1,7 +1,7 @@
 # ntm-knowledge-tracing
 Neural Turing Machines in pytorch for knowledge tracing task
 # Dataset
-EdNet KT-4: https://github.com/riiid/ednet
+EdNet KT4: https://github.com/riiid/ednet
 # Usage
 ```bash
 # installation
